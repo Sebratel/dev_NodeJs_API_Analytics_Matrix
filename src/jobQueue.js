@@ -68,7 +68,20 @@ async function runJob(job, filters) {
 
   try {
     const { files, errors } = await runReportJob(filters);
-    const hasErrors = Object.values(errors).some(Boolean);
+
+    // O Data Hub (hsmPosInstalacao) e uma fonte externa auxiliar, nao um dos
+    // dashboards que o usuario realmente consome (Analitico/HSM vem de
+    // "atendimento"/"hsm", via Matrix API) - uma falha so nele (ex.: 403,
+    // dataset fora do ar) nunca deve derrubar o job inteiro nem travar quem
+    // fica no polling de status esperando 'DONE'. So os relatorios criticos
+    // (atendimento/hsm) podem reprovar o job.
+    const NON_BLOCKING_REPORTS = new Set(['hsmPosInstalacao']);
+    const hasBlockingErrors = Object.entries(errors).some(
+      ([report, message]) => Boolean(message) && !NON_BLOCKING_REPORTS.has(report),
+    );
+    const hasNonBlockingErrors = Object.entries(errors).some(
+      ([report, message]) => Boolean(message) && NON_BLOCKING_REPORTS.has(report),
+    );
 
     job.files = Object.fromEntries(
       Object.entries(files).filter(([, filePath]) => filePath !== null),
@@ -79,7 +92,7 @@ async function runJob(job, filters) {
     job.percent = 100;
     job.finishedAt = new Date().toISOString();
 
-    if (hasErrors) {
+    if (hasBlockingErrors) {
       job.status = 'FAILED';
       job.message =
         'Falha ao gerar relatorio(s) - ' +
@@ -88,7 +101,12 @@ async function runJob(job, filters) {
           .join(' | ');
     } else {
       job.status = 'DONE';
-      job.message = `Relatorios baixados com sucesso (${Object.keys(job.files).join(', ')}).`;
+      job.message = hasNonBlockingErrors
+        ? `Relatorios baixados com sucesso (${Object.keys(job.files).join(', ')}), com aviso: ` +
+          Object.entries(job.errors)
+            .map(([report, message]) => `${report}: ${message}`)
+            .join(' | ')
+        : `Relatorios baixados com sucesso (${Object.keys(job.files).join(', ')}).`;
     }
   } catch (err) {
     job.status = 'FAILED';
