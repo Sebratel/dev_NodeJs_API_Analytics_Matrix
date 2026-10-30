@@ -45,19 +45,20 @@ export async function fetchAllDataHubRows(datasetSlug = config.dataHub.datasetSl
     const waitMs = config.dataHub.minRequestIntervalMs - (Date.now() - lastRequestAt);
     if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 
+    // Token SO no cabecalho X-Api-Token: desde 30/10/2026 o Data Hub recusa `?token=` na URL
+    // (HTTP 401) - na URL ele ficava em log de acesso, historico e Referer.
     const url = new URL(`/api/public/v1/datasets/${datasetSlug}/rows`, config.dataHub.baseUrl);
-    url.searchParams.set('token', config.dataHub.token);
     url.searchParams.set('limit', String(limit));
     url.searchParams.set('offset', String(offset));
 
     if (DEBUG) {
-      const redactedUrl = new URL(url);
-      redactedUrl.searchParams.set('token', tokenFingerprint(config.dataHub.token));
-      console.debug(`[dataHub][debug] GET ${redactedUrl.toString()}`);
+      console.debug(`[dataHub][debug] GET ${url.toString()}`);
     }
 
     lastRequestAt = Date.now();
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: { 'X-Api-Token': config.dataHub.token, Accept: 'application/json' },
+    });
 
     if (DEBUG) {
       console.debug(`[dataHub][debug] HTTP ${response.status} ${response.statusText}`);
@@ -68,7 +69,20 @@ export async function fetchAllDataHubRows(datasetSlug = config.dataHub.datasetSl
       if (DEBUG) {
         console.debug(`[dataHub][debug] response body: ${bodyText.slice(0, 500)}`);
       }
-      throw new Error(`[dataHub] Falha ao buscar dataset "${datasetSlug}": HTTP ${response.status}`);
+      // A API do Data Hub sempre responde { error } em JSON; corpo que nao e JSON veio de um
+      // proxy no caminho (o nome publico bloqueia por origem), e ai o token nao e o problema.
+      let motivo;
+      try {
+        motivo = JSON.parse(bodyText)?.error;
+      } catch {
+        motivo = undefined;
+      }
+      throw new Error(
+        `[dataHub] Falha ao buscar dataset "${datasetSlug}": HTTP ${response.status}` +
+          (typeof motivo === 'string'
+            ? ` - ${motivo}`
+            : ' com corpo que nao e JSON - nao foi a API do Data Hub, e proxy no caminho'),
+      );
     }
 
     const body = await response.json();
